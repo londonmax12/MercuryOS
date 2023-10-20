@@ -95,7 +95,7 @@ start:
     mov di, buffer
 
 .search_kernel:
-    mov si, kernel_file_name
+    mov si, stage2_file
     mov cx, 11                          ; compare up to 11 characters
     push di
     repe cmpsb
@@ -108,13 +108,13 @@ start:
     jl .search_kernel
 
     ; kernel not found
-    jmp err_kernel_not_found
+    jmp err_stage2_not_found
 
 .found_kernel:
 
     ; di should have the address to the entry
     mov ax, [di + 26]                   ; first logical cluster field (offset 26)
-    mov [kernel_cluster], ax
+    mov [stage2_cluster], ax
 
     ; load FAT from disk into memory
     mov ax, [bdb_reserved_sectors]
@@ -129,7 +129,7 @@ start:
     mov bx, KERNEL_LOAD_OFFSET
 .load_kernel_loop:
     ; Read next cluster
-    mov ax, [kernel_cluster]
+    mov ax, [stage2_cluster]
     
     add ax, 31
     mov cl, 1
@@ -139,7 +139,7 @@ start:
     add bx, [bdb_bytes_per_sector]
 
     ; Compute location of next cluster
-    mov ax, [kernel_cluster]
+    mov ax, [stage2_cluster]
     mov cx, 3
     mul cx
     mov cx, 2
@@ -163,7 +163,7 @@ start:
     cmp ax, 0x0FF8
     jae .read_finish
 
-    mov [kernel_cluster], ax
+    mov [stage2_cluster], ax
     jmp .load_kernel_loop
 
 .read_finish:
@@ -185,8 +185,8 @@ err_disk_read:
     call puts
     jmp wait_key_and_reboot
 
-err_kernel_not_found:
-    mov si, msg_kernel_not_found_err
+err_stage2_not_found:
+    mov si, msg_stage2_not_found_err
     call puts
     jmp wait_key_and_reboot
 
@@ -303,13 +303,13 @@ disk_reset_err:
     
      
 msg_disk_read_err: db 'Read from disk failed', ENDL, 0
-msg_kernel_not_found_err: db 'Kernel not found!', ENDL, 0
+msg_stage2_not_found_err: db 'STAGE2 not found!', ENDL, 0
 
 msg_loading: db 'Loading...', ENDL, 0
 
-kernel_file_name: db 'KERNEL  BIN', ENDL, 0
+stage2_file: db 'STAGE2  BIN', ENDL, 0
 
-kernel_cluster: dw 0
+stage2_cluster: dw 0
 
 KERNEL_LOAD_SEGMENT equ 0x2000
 KERNEL_LOAD_OFFSET equ 0
