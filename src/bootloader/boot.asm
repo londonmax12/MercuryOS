@@ -31,7 +31,169 @@ ebr_volume_label:           db "MERCURY OS"
 ebr_system_id:              db "FAT12   "
 
 start:
-    jmp main
+    ; Setup data segments
+    mov ax, 0 ; Write to ax because ds/es cannot be accessed directly
+    mov ds, ax
+    mov es, ax
+
+    ; Setup stack
+    mov ss, ax
+    mov sp, 0x7C00 ; Set stack pointer to the start of memory
+
+    push es
+    push word .after
+    retf
+
+.after:
+    mov [ebr_drive_number], dl
+
+    mov si, msg_loading
+    call puts
+
+    ; Read drive parameters (sectors per track and head count),
+    push es
+    mov ah, 08h
+    int 13h
+    jc err_disk_read
+    pop es
+
+    and cl, 0x3F
+    xor ch, ch
+    mov [bdb_sectors_per_track], cx
+
+    inc dh
+    mov [bdb_heads], dh
+
+    ; Compute LBA of root directory = reserved + fats * sectors_per_fat
+    mov ax, [bdb_sectors_per_fat]
+    mov bl, [bdb_fat_count]
+    xor bh, bh
+    mul bx
+    add ax, [bdb_reserved_sectors]
+    push ax
+
+    ; Compute size of root directory = (32 * number_of_entries) / bytes_per_sector
+    mov ax, [bdb_dir_entries_count]
+    shl ax, 5
+    xor dx, dx
+    div word [bdb_bytes_per_sector]
+
+    test dx, dx
+    jz .root_dir_after
+    inc ax
+.root_dir_after:
+
+    ; read root directory
+    mov cl, al                          ; cl = number of sectors to read = size of root directory
+    pop ax                              ; ax = LBA of root directory
+    mov dl, [ebr_drive_number]          ; dl = drive number (we saved it previously)
+    mov bx, buffer                      ; es:bx = buffer
+    call disk_read
+
+    ; search for kernel.bin
+    xor bx, bx
+    mov di, buffer
+
+.search_kernel:
+    mov si, kernel_file_name
+    mov cx, 11                          ; compare up to 11 characters
+    push di
+    repe cmpsb
+    pop di
+    je .found_kernel
+
+    add di, 32
+    inc bx
+    cmp bx, [bdb_dir_entries_count]
+    jl .search_kernel
+
+    ; kernel not found
+    jmp err_kernel_not_found
+
+.found_kernel:
+
+    ; di should have the address to the entry
+    mov ax, [di + 26]                   ; first logical cluster field (offset 26)
+    mov [kernel_cluster], ax
+
+    ; load FAT from disk into memory
+    mov ax, [bdb_reserved_sectors]
+    mov bx, buffer
+    mov cl, [bdb_sectors_per_fat]
+    mov dl, [ebr_drive_number]
+    call disk_read
+
+    ; Read kernel and process FAT chain
+    mov bx, KERNEL_LOAD_SEGMENT
+    mov es, bx
+    mov bx, KERNEL_LOAD_OFFSET
+.load_kernel_loop:
+    ; Read next cluster
+    mov ax, [kernel_cluster]
+    
+    add ax, 31
+    mov cl, 1
+    mov dl, [ebr_drive_number]
+    call disk_read
+
+    add bx, [bdb_bytes_per_sector]
+
+    ; Compute location of next cluster
+    mov ax, [kernel_cluster]
+    mov cx, 3
+    mul cx
+    mov cx, 2
+    div cx
+
+    mov si, buffer
+    add si, ax
+    mov ax, [ds:si]
+
+    or dx, dx
+    jz .even
+
+.odd:
+    shr ax, 4
+    jmp .next_cluster_after
+
+.even:
+    and ax, 0x0FFF
+
+.next_cluster_after:
+    cmp ax, 0x0FF8
+    jae .read_finish
+
+    mov [kernel_cluster], ax
+    jmp .load_kernel_loop
+
+.read_finish:
+    mov dl, [ebr_drive_number]
+
+    mov ax, KERNEL_LOAD_SEGMENT
+    mov ds, ax
+    mov es, ax
+
+    jmp KERNEL_LOAD_SEGMENT:KERNEL_LOAD_OFFSET
+
+    jmp wait_key_and_reboot
+
+    cli
+    hlt
+
+err_disk_read:
+    mov si, msg_disk_read_err
+    call puts
+    jmp wait_key_and_reboot
+
+err_kernel_not_found:
+    mov si, msg_kernel_not_found_err
+    call puts
+    jmp wait_key_and_reboot
+
+wait_key_and_reboot:
+    mov ah, 0
+    int 16h
+    jmp 0FFFFh:0
 
 ; Prints a string to the screen
 ; Parameters:
@@ -56,41 +218,6 @@ puts:
     pop ax
     pop si    
     ret
-
-main:
-    ; Setup data segments
-    mov ax, 0 ; Write to ax because ds/es cannot be accessed directly
-    mov ds, ax
-    mov es, ax
-
-    ; Setup stack
-    mov ss, ax
-    mov sp, 0x7C00 ; Set stack pointer to the start of memory
-
-    mov [ebr_drive_number], dl
-    mov ax, 1
-    mov cl, 1
-    mov bx, 0x7E00
-    call disk_read
-
-    mov si, msg_start
-    call puts
-
-    cli
-    hlt
-
-disk_read_err:
-    mov si, msg_disk_read_err
-    call puts
-    jmp wait_key_and_reboot
-wait_key_and_reboot:
-    mov ah, 0
-    int 16h
-    jmp 0FFFFh:0
-
-.halt:
-    cli
-    hlt
 
 ; Disk routines
 
@@ -149,7 +276,7 @@ disk_read:
     test di, di
     jnz .retry
 .fail:
-    jmp disk_read_err
+    jmp err_disk_read
 .done:
     popa
     pop di
@@ -167,14 +294,29 @@ disk_reset:
     mov ah, 0 
     stc
     int 13h
-    jc disk_read_err
+    jc err_disk_read
     popa
     ret
+disk_reset_err:
+    cli
+    hlt
+    
      
 msg_disk_read_err: db 'Read from disk failed', ENDL, 0
-msg_start: db 'MercuryOS', ENDL, 0
+msg_kernel_not_found_err: db 'Kernel not found!', ENDL, 0
+
+msg_loading: db 'Loading...', ENDL, 0
+
+kernel_file_name: db 'KERNEL  BIN', ENDL, 0
+
+kernel_cluster: dw 0
+
+KERNEL_LOAD_SEGMENT equ 0x2000
+KERNEL_LOAD_OFFSET equ 0
 
 ; Fill rest of data up to 510 bytes with 0s
 times 510-($-$$) db 0
 ; Magic code for compiler (2 bytes long)
 dw 0AA55h
+
+buffer:

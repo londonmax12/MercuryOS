@@ -1,11 +1,16 @@
 ; Location for memory
-org 0x7C00
+org 0x0
 bits 16
 
 %define ENDL 0x0D, 0x0A
 
 start:
-    jmp main
+    mov si, hello_world
+    call puts
+.halt:
+    cli
+    hlt
+
 
 ; Prints a string to the screen
 ; Params:
@@ -31,25 +36,11 @@ puts:
     pop si    
     ret
 
-main:
-    ; Setup data segments
-    mov ax, 0 ; Write to ax because ds/es cannot be accessed directly
-    mov ds, ax
-    mov es, ax
-
-    ; Setup stack
-    mov ss, ax
-    mov sp, 0x7C00 ; Set stack pointer to the start of memory
-
-    mov si, hello_world
-    call puts
-
-    hlt
 
 .halt:
     jmp .halt
 
-hello_world: db 'Hello World!', ENDL, 0
+hello_world: db 'MercuryOS', ENDL, 0
 
 ; Fill rest of data up to 510 bytes with 0s
 times 510-($-$$) db 0
